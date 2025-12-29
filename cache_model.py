@@ -17,6 +17,7 @@ import logging
 import re
 import shutil
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -252,6 +253,9 @@ def download_model_from_hf(
     """
     logger.info(f"Downloading model '{model_name}' from HuggingFace...")
     logger.info(f"Download directory: {download_dir}")
+    logger.info("Starting download - this may take a while for large models...")
+
+    start_time = time.time()
 
     download_path = snapshot_download(
         repo_id=model_name,
@@ -261,7 +265,9 @@ def download_model_from_hf(
         token=hf_token  # Will be None if not provided
     )
 
+    elapsed_time = time.time() - start_time
     logger.info(f"Download complete: {download_path}")
+    logger.info(f"Download took {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
 
     # Validate download - check that files were actually downloaded
     if not os.path.exists(download_path):
@@ -270,14 +276,34 @@ def download_model_from_hf(
             f"Download validation failed: path {download_path} does not exist"
         )
 
-    downloaded_files = os.listdir(download_path)
-    if len(downloaded_files) == 0:
+    # Count files and calculate total size
+    download_path_obj = Path(download_path)
+    all_files = list(download_path_obj.rglob('*'))
+    file_count = sum(1 for f in all_files if f.is_file())
+    total_size_bytes = sum(f.stat().st_size for f in all_files if f.is_file())
+    total_size_gb = total_size_bytes / (1024**3)
+
+    if file_count == 0:
         logger.warning(
             "Download directory is empty - model repo may be empty or "
             "download may have failed silently"
         )
     else:
-        logger.info(f"Downloaded {len(downloaded_files)} files/directories")
+        logger.info(f"Downloaded {file_count} files")
+        logger.info(f"Total download size: {total_size_gb:.2f} GB ({total_size_bytes:,} bytes)")
+
+        # Log download speed
+        if elapsed_time > 0:
+            speed_mbps = (total_size_bytes / (1024**2)) / elapsed_time
+            logger.info(f"Average download speed: {speed_mbps:.2f} MB/s")
+
+        # Log largest files for debugging
+        files_with_sizes = [(f, f.stat().st_size) for f in all_files if f.is_file()]
+        files_with_sizes.sort(key=lambda x: x[1], reverse=True)
+        logger.info(f"Largest files downloaded:")
+        for file_path, size in files_with_sizes[:5]:  # Top 5 largest files
+            size_mb = size / (1024**2)
+            logger.info(f"  - {file_path.name}: {size_mb:.2f} MB")
 
     return download_path
 
