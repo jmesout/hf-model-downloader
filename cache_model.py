@@ -38,6 +38,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Default patterns to ignore when downloading from HuggingFace
+# Optimized for vLLM inference on NVIDIA B200/CUDA GPUs
+# Based on production requirements: skip metal/, original/, and docs
+DEFAULT_IGNORE_PATTERNS = [
+    # Platform-specific optimizations (not for NVIDIA CUDA/vLLM)
+    "metal/*",           # Apple Silicon Metal weights (58GB+ for gpt-oss-120b)
+    "onnx/*",            # ONNX Runtime format
+    "tflite/*",          # TensorFlow Lite for mobile
+    "*.mlmodel*",        # Apple Core ML format
+
+    # Duplicate/original formats (vLLM uses main safetensors directly)
+    "original/*",        # Original checkpoint format (~70GB for gpt-oss-120b)
+                         # vLLM doesn't need this - it uses the main safetensors files
+
+    # Alternative model formats (not used by PyTorch/vLLM)
+    "*.msgpack",         # Flax/JAX format
+    "*.h5",              # TensorFlow/Keras format
+    "*.ckpt*",           # TensorFlow checkpoints
+    "*.pb",              # TensorFlow protocol buffers
+    "flax_model.msgpack",
+    "tf_model.h5",
+
+    # Documentation and metadata (not needed at runtime)
+    "README.md",         # Documentation
+    "LICENSE",           # Legal file
+    "USAGE_POLICY",      # Policy document
+    ".gitattributes",    # Git metadata
+    "*.py",              # Python scripts
+    "*.ipynb",           # Jupyter notebooks
+]
+
+
 def mask_credential(value: str) -> str:
     """
     Mask a credential for logging, showing only first 4 and last 4 characters.
@@ -149,6 +181,35 @@ def validate_environment() -> dict:
     config["hf_token"] = os.environ.get("HF_TOKEN")
     config["download_dir"] = os.environ.get("DOWNLOAD_DIR", "/tmp")
 
+    # File filtering patterns (for skipping unnecessary files during download)
+    ignore_patterns_str = os.environ.get("IGNORE_PATTERNS")
+    allow_patterns_str = os.environ.get("ALLOW_PATTERNS")
+
+    # Parse patterns from environment variables
+    ignore_patterns = None
+    allow_patterns = None
+
+    if allow_patterns_str is not None:
+        # ALLOW_PATTERNS takes precedence over IGNORE_PATTERNS
+        allow_patterns = [p.strip() for p in allow_patterns_str.split(",") if p.strip()]
+        logger.info(f"Using custom allow patterns: {allow_patterns}")
+    elif ignore_patterns_str is not None:
+        if ignore_patterns_str == "":
+            # Empty string explicitly disables filtering
+            ignore_patterns = None
+            logger.info("File filtering disabled (IGNORE_PATTERNS set to empty)")
+        else:
+            # Custom ignore patterns provided
+            ignore_patterns = [p.strip() for p in ignore_patterns_str.split(",") if p.strip()]
+            logger.info(f"Using custom ignore patterns: {ignore_patterns}")
+    else:
+        # Use default ignore patterns
+        ignore_patterns = DEFAULT_IGNORE_PATTERNS
+        logger.info(f"Using default ignore patterns ({len(ignore_patterns)} patterns)")
+
+    config["ignore_patterns"] = ignore_patterns
+    config["allow_patterns"] = allow_patterns
+
     # Validate inputs to prevent security vulnerabilities
     try:
         validate_inputs(
@@ -170,6 +231,14 @@ def validate_environment() -> dict:
     logger.info(f"  AWS_SECRET_ACCESS_KEY: {mask_credential(config['aws_secret_access_key'])}")
     logger.info(f"  HF_TOKEN: {'***' if config['hf_token'] else 'not set'}")
     logger.info(f"  DOWNLOAD_DIR: {config['download_dir']}")
+
+    # Log filtering configuration
+    if config['allow_patterns']:
+        logger.info(f"  ALLOW_PATTERNS: {len(config['allow_patterns'])} patterns")
+    elif config['ignore_patterns']:
+        logger.info(f"  IGNORE_PATTERNS: {len(config['ignore_patterns'])} patterns (default)")
+    else:
+        logger.info(f"  File filtering: disabled")
 
     return config
 
@@ -235,7 +304,9 @@ def model_exists_in_s3(s3_client, bucket: str, prefix: str) -> bool:
 def download_model_from_hf(
     model_name: str,
     download_dir: str,
-    hf_token: Optional[str] = None
+    hf_token: Optional[str] = None,
+    ignore_patterns: Optional[list] = None,
+    allow_patterns: Optional[list] = None
 ) -> str:
     """
     Download model from HuggingFace to local directory.
@@ -244,6 +315,8 @@ def download_model_from_hf(
         model_name: HuggingFace repo ID (e.g., meta-llama/Llama-2-7b-hf)
         download_dir: Local directory for download
         hf_token: Optional HF token for gated models
+        ignore_patterns: Optional list of glob patterns to ignore during download
+        allow_patterns: Optional list of glob patterns to allow (overrides ignore_patterns)
 
     Returns:
         str: Path to downloaded model directory
@@ -253,21 +326,54 @@ def download_model_from_hf(
     """
     logger.info(f"Downloading model '{model_name}' from HuggingFace...")
     logger.info(f"Download directory: {download_dir}")
-    logger.info("Starting download - this may take a while for large models...")
+
+    # Log filtering configuration
+    if allow_patterns:
+        logger.info(f"Download filtering: ALLOW mode - only downloading files matching {len(allow_patterns)} patterns")
+        logger.info(f"  Allowed patterns: {', '.join(allow_patterns)}")
+    elif ignore_patterns:
+        logger.info(f"Download filtering: IGNORE mode - skipping files matching {len(ignore_patterns)} patterns")
+        logger.info(f"  Ignored patterns: {', '.join(ignore_patterns[:5])}")
+        if len(ignore_patterns) > 5:
+            logger.info(f"    ... and {len(ignore_patterns) - 5} more patterns")
+    else:
+        logger.info("Download filtering: disabled - downloading all files")
+
+    logger.info("=" * 60)
+    logger.info("PHASE 1: METADATA DISCOVERY")
+    logger.info("=" * 60)
+    logger.info("Connecting to HuggingFace to discover model files...")
+    logger.info("You will see HEAD requests below - this is normal and expected.")
+    logger.info("The application is NOT hanging - it's querying file metadata.")
+    logger.info("For large models, this can take 2-5 minutes.")
+    logger.info("=" * 60)
 
     start_time = time.time()
 
-    download_path = snapshot_download(
-        repo_id=model_name,
-        local_dir=download_dir,
-        local_dir_use_symlinks=False,  # Get actual files, not symlinks
-        resume_download=True,  # Allow resuming interrupted downloads
-        token=hf_token  # Will be None if not provided
-    )
+    # Build download kwargs
+    download_kwargs = {
+        "repo_id": model_name,
+        "local_dir": download_dir,
+        "local_dir_use_symlinks": False,  # Get actual files, not symlinks
+        "resume_download": True,  # Allow resuming interrupted downloads
+        "token": hf_token  # Will be None if not provided
+    }
+
+    # Add filtering patterns if configured
+    if allow_patterns:
+        download_kwargs["allow_patterns"] = allow_patterns
+    elif ignore_patterns:
+        download_kwargs["ignore_patterns"] = ignore_patterns
+
+    logger.info("Querying HuggingFace API for file list...")
+    download_path = snapshot_download(**download_kwargs)
 
     elapsed_time = time.time() - start_time
-    logger.info(f"Download complete: {download_path}")
-    logger.info(f"Download took {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+    logger.info("=" * 60)
+    logger.info("DOWNLOAD COMPLETE")
+    logger.info("=" * 60)
+    logger.info(f"Downloaded to: {download_path}")
+    logger.info(f"Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
 
     # Validate download - check that files were actually downloaded
     if not os.path.exists(download_path):
@@ -503,7 +609,9 @@ def main():
         download_model_from_hf(
             config["model_name"],
             download_dir,
-            config["hf_token"]
+            config["hf_token"],
+            config["ignore_patterns"],
+            config["allow_patterns"]
         )
 
         # Step 8: Upload to S3
