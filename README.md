@@ -48,13 +48,13 @@ Pre-built container images are available at GitHub Container Registry:
 
 ```bash
 # Pull latest stable version
-docker pull ghcr.io/yourusername/hf-model-downloader:latest
+docker pull ghcr.io/jmesout/hf-model-downloader:latest
 
 # Pull specific version (recommended for production)
-docker pull ghcr.io/yourusername/hf-model-downloader:v1.0.0
+docker pull ghcr.io/jmesout/hf-model-downloader:v1.0.0
 
 # Pull by commit SHA (most secure - immutable)
-docker pull ghcr.io/yourusername/hf-model-downloader@sha256:abc123...
+docker pull ghcr.io/jmesout/hf-model-downloader@sha256:abc123...
 ```
 
 **Available tags:**
@@ -76,14 +76,14 @@ brew install cosign  # macOS
 
 # Verify image signature
 cosign verify \
-  --certificate-identity=https://github.com/yourusername/hf-model-downloader/.github/workflows/test.yml@refs/heads/main \
+  --certificate-identity=https://github.com/jmesout/hf-model-downloader/.github/workflows/test.yml@refs/heads/main \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
-  ghcr.io/yourusername/hf-model-downloader:v1.0.0
+  ghcr.io/jmesout/hf-model-downloader:v1.0.0
 ```
 
 ## Security Scanning
 
-All images are automatically scanned with Trivy for vulnerabilities. View scan results in the [Security tab](https://github.com/yourusername/hf-model-downloader/security) of this repository.
+All images are automatically scanned with Trivy for vulnerabilities. View scan results in the [Security tab](https://github.com/jmesout/hf-model-downloader/security) of this repository.
 
 Images with HIGH or CRITICAL vulnerabilities are not published until they're resolved.
 
@@ -142,7 +142,7 @@ metadata:
 spec:
   initContainers:
   - name: cache-model
-    image: ghcr.io/yourusername/hf-model-downloader:latest
+    image: ghcr.io/jmesout/hf-model-downloader:latest
     env:
     - name: MODEL_NAME
       value: "gpt2"
@@ -227,8 +227,6 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 # Run security scan before using
 trivy image --severity HIGH,CRITICAL hf-model-cache:custom
 ```
-
-See [BUILD.md](BUILD.md) for detailed build instructions and best practices.
 
 ## Local Testing
 
@@ -340,7 +338,6 @@ Tests use `moto` to mock S3, so no real credentials needed. Tests run automatica
 - Rotate your Civo credentials regularly
 - Limit bucket permissions to only what's needed (ListBucket, PutObject)
 - Use specific image versions or SHA digests in production (not `latest`)
-- See [examples/pod-security.yaml](examples/pod-security.yaml) for a complete example with security hardening
 
 ## Contributing
 

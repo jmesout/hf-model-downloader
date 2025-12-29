@@ -36,7 +36,7 @@ LABEL org.opencontainers.image.title="HuggingFace Model Cache Loader" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
-      org.opencontainers.image.source="https://github.com/yourusername/hf-model-downloader" \
+      org.opencontainers.image.source="https://github.com/jmesout/hf-model-downloader" \
       org.opencontainers.image.licenses="MIT"
 
 # Security: Install security updates and ca-certificates only
