@@ -1,0 +1,58 @@
+# Git files
+.git
+.gitignore
+.github
+
+# Documentation
+README.md
+*.md
+docs/
+LICENSE
+
+# Testing
+tests/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.pyc
+__pycache__/
+
+# Development dependencies
+requirements.txt
+requirements-dev.txt
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.DS_Store
+
+# Claude and AI tools
+.claude/
+.opencode/
+
+# Environment files (should never be in images)
+.env
+.env.local
+.env.*.local
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local testing data
+models/
+tmp/
+*.log
+
+# CI/CD
+.trivyignore

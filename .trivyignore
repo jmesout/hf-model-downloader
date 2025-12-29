@@ -1,0 +1,14 @@
+# Trivy Ignore File
+#
+# This file contains CVEs that are intentionally ignored from security scans.
+# Each ignored CVE should include:
+# 1. The CVE identifier
+# 2. A comment explaining why it's ignored
+# 3. A date when the exception should be reviewed
+#
+# Example:
+# # CVE-2023-12345 - False positive for Python stdlib, fixed in upstream
+# # Review: 2025-03-01
+# CVE-2023-12345
+
+# Add ignored CVEs below this line with justification
