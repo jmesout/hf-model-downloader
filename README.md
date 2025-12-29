@@ -1,5 +1,7 @@
 # HuggingFace Model Cache Loader
 
+[![codecov](https://codecov.io/gh/jmesout/hf-model-downloader/branch/main/graph/badge.svg)](https://codecov.io/gh/jmesout/hf-model-downloader)
+
 A Kubernetes init container that downloads HuggingFace models and caches them in Civo Object Store (or any S3-compatible storage).
 
 The problem this solves: you don't want every pod downloading a 700GB model from HuggingFace, 4 times for multiple replicas. Download once, cache in object storage, share a single RWX S3 backed version across all your replicas.
@@ -76,7 +78,7 @@ brew install cosign  # macOS
 
 # Verify image signature
 cosign verify \
-  --certificate-identity=https://github.com/jmesout/hf-model-downloader/.github/workflows/test.yml@refs/heads/main \
+  --certificate-identity=https://github.com/jmesout/hf-model-downloader/.github/workflows/ci.yml@refs/heads/main \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
   ghcr.io/jmesout/hf-model-downloader:v1.0.0
 ```
