@@ -18,7 +18,8 @@ class TestDownloadModelFromHF:
     """Tests for HuggingFace model download function."""
 
     @patch('cache_model.snapshot_download')
-    def test_download_model_without_token(self, mock_snapshot, temp_download_dir):
+    @patch('cache_model.threading.Thread')
+    def test_download_model_without_token(self, mock_thread, mock_snapshot, temp_download_dir):
         """Test downloading a model without HF token."""
         # Mock the snapshot_download to return the download path
         mock_snapshot.return_value = temp_download_dir
@@ -30,19 +31,20 @@ class TestDownloadModelFromHF:
             hf_token=None
         )
 
-        # Verify snapshot_download was called correctly
-        mock_snapshot.assert_called_once_with(
-            repo_id="gpt2",
-            local_dir=temp_download_dir,
-            local_dir_use_symlinks=False,
-            resume_download=True,
-            token=None
-        )
+        # Verify snapshot_download was called with correct base params
+        call_kwargs = mock_snapshot.call_args[1]
+        assert call_kwargs['repo_id'] == "gpt2"
+        assert call_kwargs['local_dir'] == temp_download_dir
+        assert call_kwargs['local_dir_use_symlinks'] is False
+        assert call_kwargs['resume_download'] is True
+        assert call_kwargs['token'] is None
+        assert 'max_workers' in call_kwargs  # Should include max_workers now
 
         assert result == temp_download_dir
 
     @patch('cache_model.snapshot_download')
-    def test_download_model_with_token(self, mock_snapshot, temp_download_dir, mock_hf_token):
+    @patch('cache_model.threading.Thread')
+    def test_download_model_with_token(self, mock_thread, mock_snapshot, temp_download_dir, mock_hf_token):
         """Test downloading a gated model with HF token."""
         # Mock the snapshot_download to return the download path
         mock_snapshot.return_value = temp_download_dir
@@ -55,18 +57,19 @@ class TestDownloadModelFromHF:
         )
 
         # Verify token was passed
-        mock_snapshot.assert_called_once_with(
-            repo_id="meta-llama/Llama-2-7b-hf",
-            local_dir=temp_download_dir,
-            local_dir_use_symlinks=False,
-            resume_download=True,
-            token=mock_hf_token
-        )
+        call_kwargs = mock_snapshot.call_args[1]
+        assert call_kwargs['repo_id'] == "meta-llama/Llama-2-7b-hf"
+        assert call_kwargs['local_dir'] == temp_download_dir
+        assert call_kwargs['local_dir_use_symlinks'] is False
+        assert call_kwargs['resume_download'] is True
+        assert call_kwargs['token'] == mock_hf_token
+        assert 'max_workers' in call_kwargs
 
         assert result == temp_download_dir
 
     @patch('cache_model.snapshot_download')
-    def test_download_model_no_symlinks(self, mock_snapshot, temp_download_dir):
+    @patch('cache_model.threading.Thread')
+    def test_download_model_no_symlinks(self, mock_thread, mock_snapshot, temp_download_dir):
         """Test that symlinks are disabled in download."""
         mock_snapshot.return_value = temp_download_dir
 
@@ -77,7 +80,8 @@ class TestDownloadModelFromHF:
         assert call_kwargs['local_dir_use_symlinks'] is False
 
     @patch('cache_model.snapshot_download')
-    def test_download_model_resume_enabled(self, mock_snapshot, temp_download_dir):
+    @patch('cache_model.threading.Thread')
+    def test_download_model_resume_enabled(self, mock_thread, mock_snapshot, temp_download_dir):
         """Test that resume download is enabled."""
         mock_snapshot.return_value = temp_download_dir
 
@@ -88,7 +92,8 @@ class TestDownloadModelFromHF:
         assert call_kwargs['resume_download'] is True
 
     @patch('cache_model.snapshot_download')
-    def test_download_model_handles_errors(self, mock_snapshot, temp_download_dir):
+    @patch('cache_model.threading.Thread')
+    def test_download_model_handles_errors(self, mock_thread, mock_snapshot, temp_download_dir):
         """Test that download function propagates errors."""
         # Mock snapshot_download to raise an error
         mock_snapshot.side_effect = Exception("Download failed")
