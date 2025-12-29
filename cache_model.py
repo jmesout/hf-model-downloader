@@ -17,6 +17,7 @@ import logging
 import re
 import shutil
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -301,6 +302,82 @@ def model_exists_in_s3(s3_client, bucket: str, prefix: str) -> bool:
         raise
 
 
+def get_directory_size(directory: str) -> int:
+    """
+    Calculate total size of all files in a directory.
+
+    Args:
+        directory: Path to directory
+
+    Returns:
+        int: Total size in bytes
+    """
+    total_size = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(directory):
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                if os.path.exists(filepath):
+                    total_size += os.path.getsize(filepath)
+    except (OSError, FileNotFoundError):
+        # Directory might not exist yet or be inaccessible
+        pass
+    return total_size
+
+
+def monitor_download_progress(
+    download_dir: str,
+    stop_event: threading.Event,
+    estimated_size_gb: float = 100.0,
+    log_interval_seconds: int = 30
+):
+    """
+    Monitor download progress in background thread by checking directory size.
+
+    Args:
+        download_dir: Directory being downloaded to
+        stop_event: Threading event to signal when to stop monitoring
+        estimated_size_gb: Estimated total download size in GB (for percentage calc)
+        log_interval_seconds: How often to log progress updates
+
+    This runs in a background thread and logs progress every log_interval_seconds
+    until stop_event is set.
+    """
+    start_time = time.time()
+    last_logged_size = 0
+    last_log_time = 0  # Track when we last logged
+    log_threshold_bytes = 5 * (1024**3)  # Log every 5GB change
+
+    while not stop_event.is_set():
+        try:
+            current_size = get_directory_size(download_dir)
+            current_size_gb = current_size / (1024**3)
+            elapsed = time.time() - start_time
+
+            # Log if we've downloaded 5GB+ since last log, or if interval elapsed since last log
+            if (current_size - last_logged_size >= log_threshold_bytes or
+                elapsed - last_log_time >= log_interval_seconds):
+
+                if current_size > 0 and elapsed > 0:
+                    # Calculate percentage and speed
+                    percentage = min(100.0, (current_size_gb / estimated_size_gb) * 100)
+                    speed_mbps = (current_size / (1024**2)) / elapsed
+
+                    logger.info(
+                        f"Download progress: {current_size_gb:.1f} GB / ~{estimated_size_gb:.0f} GB "
+                        f"({percentage:.0f}%) - {speed_mbps:.0f} MB/s avg"
+                    )
+                    last_logged_size = current_size
+                    last_log_time = elapsed  # Update when we last logged
+
+        except Exception as e:
+            # Don't let monitoring errors crash the thread
+            logger.debug(f"Progress monitoring error: {e}")
+
+        # Sleep for a short interval
+        stop_event.wait(log_interval_seconds)
+
+
 def download_model_from_hf(
     model_name: str,
     download_dir: str,
@@ -339,24 +416,18 @@ def download_model_from_hf(
     else:
         logger.info("Download filtering: disabled - downloading all files")
 
-    logger.info("=" * 60)
-    logger.info("PHASE 1: METADATA DISCOVERY")
-    logger.info("=" * 60)
-    logger.info("Connecting to HuggingFace to discover model files...")
-    logger.info("You will see HEAD requests below - this is normal and expected.")
-    logger.info("The application is NOT hanging - it's querying file metadata.")
-    logger.info("For large models, this can take 2-5 minutes.")
-    logger.info("=" * 60)
-
     start_time = time.time()
 
     # Build download kwargs
+    # Default to 16 workers for faster downloads (can be overridden via HF_MAX_WORKERS)
+    max_workers = int(os.environ.get("HF_MAX_WORKERS", "16"))
     download_kwargs = {
         "repo_id": model_name,
         "local_dir": download_dir,
         "local_dir_use_symlinks": False,  # Get actual files, not symlinks
         "resume_download": True,  # Allow resuming interrupted downloads
-        "token": hf_token  # Will be None if not provided
+        "token": hf_token,  # Will be None if not provided
+        "max_workers": max_workers  # Concurrent download workers
     }
 
     # Add filtering patterns if configured
@@ -365,8 +436,33 @@ def download_model_from_hf(
     elif ignore_patterns:
         download_kwargs["ignore_patterns"] = ignore_patterns
 
-    logger.info("Querying HuggingFace API for file list...")
+    # Log what's about to happen
+    logger.info("=" * 60)
+    logger.info(f"STARTING DOWNLOAD ({max_workers} concurrent workers)")
+    logger.info("=" * 60)
+    logger.info("Step 1: Querying HuggingFace for model file list (2-5 min)")
+    logger.info("  - You will see HEAD requests in logs - this is normal")
+    logger.info("  - Application is NOT hanging, it's discovering files")
+    est_time = 15 if max_workers >= 16 else 20
+    logger.info(f"Step 2: Downloading files (~{est_time} min for ~60GB)")
+    logger.info("  - Progress updates will appear every 30 seconds once downloads start")
+    logger.info("=" * 60)
+
+    # Start progress monitoring thread
+    stop_progress = threading.Event()
+    progress_thread = threading.Thread(
+        target=monitor_download_progress,
+        args=(download_dir, stop_progress, 100.0, 30),  # 100GB estimate, 30s interval
+        daemon=True
+    )
+    progress_thread.start()
+
+    # This performs metadata discovery THEN downloads
     download_path = snapshot_download(**download_kwargs)
+
+    # Stop progress monitoring
+    stop_progress.set()
+    progress_thread.join(timeout=5)
 
     elapsed_time = time.time() - start_time
     logger.info("=" * 60)
@@ -435,7 +531,11 @@ def upload_file_to_s3(
     Raises:
         Exception: On upload failure
     """
-    s3_client.upload_file(local_file_path, bucket, s3_key)
+    # Use put_object() instead of upload_file() for better compatibility with
+    # S3-compatible storage like Civo/MinIO which can have issues with
+    # boto3's automatic payload signing in upload_file()
+    with open(local_file_path, 'rb') as f:
+        s3_client.put_object(Bucket=bucket, Key=s3_key, Body=f)
     return os.path.getsize(local_file_path)
 
 
@@ -463,8 +563,6 @@ def upload_directory_to_s3(
     if not s3_prefix.endswith('/'):
         s3_prefix += '/'
 
-    logger.info(f"Uploading {local_dir} to s3://{bucket}/{s3_prefix}")
-
     # Collect all files to upload
     files_to_upload = []
     for root, dirs, files in os.walk(local_dir):
@@ -478,8 +576,13 @@ def upload_directory_to_s3(
         logger.warning("No files to upload")
         return
 
-    logger.info(f"Uploading {len(files_to_upload)} files with "
-                f"{max_workers} concurrent workers")
+    logger.info("=" * 60)
+    logger.info(f"PHASE 3: UPLOADING TO S3 ({max_workers} concurrent workers)")
+    logger.info("=" * 60)
+    logger.info(f"Destination: s3://{bucket}/{s3_prefix}")
+    logger.info(f"Files to upload: {len(files_to_upload)}")
+    logger.info(f"For ~60GB, this typically takes 8-10 minutes")
+    logger.info("=" * 60)
 
     # Upload files concurrently with progress bar
     total_size = 0
@@ -521,10 +624,12 @@ def upload_directory_to_s3(
                     )
                     raise
 
-    logger.info(
-        f"Upload complete: {file_count} files, "
-        f"{total_size / 1024 / 1024:.2f} MB total"
-    )
+    logger.info("=" * 60)
+    logger.info("PHASE 3: UPLOAD COMPLETE")
+    logger.info("=" * 60)
+    logger.info(f"Uploaded {file_count} files")
+    logger.info(f"Total size: {total_size / (1024**3):.2f} GB ({total_size / (1024**2):.0f} MB)")
+    logger.info("=" * 60)
 
 
 def cleanup_local_files(directory: str):
